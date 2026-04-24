@@ -16,9 +16,8 @@ app.use('*', cors({
 
 // Configuration for remote providers
 const PROVIDERS = [
-  { id: 'vercel', name: 'Vercel Edge', url: 'https://coderx-backend.vercel.app/' },
-  { id: 'netlify', name: 'Netlify Edge', url: 'https://api-netlify.yourdomain.com' },
-  { id: 'render', name: 'Render Docker', url: 'https://coderx-backend.onrender.com' },
+  { id: 'render1', name: 'Render Edge', url: 'https://coderx-backend.onrender.com' },
+  { id: 'render2', name: 'Render Edge', url: 'https://coderx-backend-render.onrender.com' }
 ];
 
 app.all('*', async (c) => {
@@ -30,16 +29,16 @@ app.all('*', async (c) => {
 
     // 1. Discover Healthy Providers
     let healthyProviders = [];
-    if (!c.env || !c.env.UPSTASH_REDIS_REST_URL) {
+    if (!c.env) { // || !c.env.UPSTASH_REDIS_REST_URL
       // Local Simulator Mode
       healthyProviders = [
-        { id: 'main-ai', name: 'Main AI Server', url: 'http://127.0.0.1:3826' },
-        { id: 'market', name: 'Market Server', url: 'http://127.0.0.1:3828' },
-        { id: 'knowledge', name: 'Knowledge Server', url: 'http://127.0.0.1:3829' },
-        { id: 'render-local', name: 'Render Docker Node', url: 'http://127.0.0.1:3830' },
-        { id: 'python-market', name: 'Python Plugin Market', url: 'http://127.0.0.1:3827' },
-        { id: 'vercel-simulator', name: 'Vercel Simulator', url: 'http://127.0.0.1:3000' },
-        { id: 'netlify-simulator', name: 'Netlify Simulator', url: 'http://127.0.0.1:3001' }
+        // { id: 'main-ai', name: 'Main AI Server', url: 'http://127.0.0.1:3826' },
+        // { id: 'market', name: 'Market Server', url: 'http://127.0.0.1:3828' },
+        // { id: 'knowledge', name: 'Knowledge Server', url: 'http://127.0.0.1:3829' },
+        // { id: 'render-local', name: 'Render Docker Node', url: 'http://127.0.0.1:3830' },
+        // { id: 'python-market', name: 'Python Plugin Market', url: 'http://127.0.0.1:3827' },
+        // { id: 'vercel-simulator', name: 'Vercel Simulator', url: 'http://127.0.0.1:3000' },
+        // { id: 'netlify-simulator', name: 'Netlify Simulator', url: 'http://127.0.0.1:3001' }
       ];
     } else {
       const redis = Redis.fromEnv(c.env);
