@@ -35,24 +35,34 @@ app.all('*', async (c) => {
 
     // 1. Discover Healthy Providers
     let healthyProviders = [];
-    if (!c.env) { // || !c.env.UPSTASH_REDIS_REST_URL
-      // Local Simulator Mode
-      healthyProviders = [
-        // { id: 'main-ai', name: 'Main AI Server', url: 'http://127.0.0.1:3826' },
-        // { id: 'market', name: 'Market Server', url: 'http://127.0.0.1:3828' },
-        // { id: 'knowledge', name: 'Knowledge Server', url: 'http://127.0.0.1:3829' },
-        // { id: 'render-local', name: 'Render Docker Node', url: 'http://127.0.0.1:3830' },
-        // { id: 'python-market', name: 'Python Plugin Market', url: 'http://127.0.0.1:3827' },
-        // { id: 'vercel-simulator', name: 'Vercel Simulator', url: 'http://127.0.0.1:3000' },
-        // { id: 'netlify-simulator', name: 'Netlify Simulator', url: 'http://127.0.0.1:3001' }
-      ];
+    
+    // Support both Cloudflare (c.env) and Vercel/Node (process.env)
+    const runtimeEnv = {
+      UPSTASH_REDIS_REST_URL: (c.env as Bindings)?.UPSTASH_REDIS_REST_URL || (process as any).env?.UPSTASH_REDIS_REST_URL,
+      UPSTASH_REDIS_REST_TOKEN: (c.env as Bindings)?.UPSTASH_REDIS_REST_TOKEN || (process as any).env?.UPSTASH_REDIS_REST_TOKEN,
+    };
+
+    if (!runtimeEnv.UPSTASH_REDIS_REST_URL || !runtimeEnv.UPSTASH_REDIS_REST_TOKEN) {
+      // Local Simulator Mode or Missing Config
+      console.warn('[Gateway] Redis credentials missing, entering simulator mode or using default providers');
+      healthyProviders = [...PROVIDERS]; // Default to all if no redis
     } else {
-      const redis = Redis.fromEnv(c.env as Bindings);
-      for (const p of PROVIDERS) {
-        const isExhausted = await redis.get(`exhausted:${p.id}`);
-        if (!isExhausted) healthyProviders.push(p);
+      try {
+        const redis = new Redis({
+          url: runtimeEnv.UPSTASH_REDIS_REST_URL,
+          token: runtimeEnv.UPSTASH_REDIS_REST_TOKEN,
+        });
+        
+        for (const p of PROVIDERS) {
+          const isExhausted = await redis.get(`exhausted:${p.id}`);
+          if (!isExhausted) healthyProviders.push(p);
+        }
+      } catch (redisError: any) {
+        console.error('[Gateway] Redis connection error:', redisError.message);
+        healthyProviders = [...PROVIDERS]; // Fallback to all providers if redis fails
       }
     }
+
 
     if (healthyProviders.length === 0) {
       return c.json({ error: 'All providers exhausted' }, 503);
