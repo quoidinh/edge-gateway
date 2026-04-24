@@ -1,0 +1,10 @@
+name = "edge-gateway"
+main = "index.ts"
+compatibility_date = "2024-04-01"
+
+[vars]
+# UPSTASH_REDIS_REST_URL = "your-url"
+# UPSTASH_REDIS_REST_TOKEN = "your-token"
+
+[observability]
+enabled = true
