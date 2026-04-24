@@ -2,7 +2,13 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { Redis } from '@upstash/redis/cloudflare';
 
-const app = new Hono();
+type Bindings = {
+  UPSTASH_REDIS_REST_URL: string;
+  UPSTASH_REDIS_REST_TOKEN: string;
+}
+
+const app = new Hono<{ Bindings: Bindings }>();
+
 
 // 1. Enable CORS with full credentials support
 app.use('*', cors({
@@ -41,7 +47,7 @@ app.all('*', async (c) => {
         // { id: 'netlify-simulator', name: 'Netlify Simulator', url: 'http://127.0.0.1:3001' }
       ];
     } else {
-      const redis = Redis.fromEnv(c.env);
+      const redis = Redis.fromEnv(c.env as Bindings);
       for (const p of PROVIDERS) {
         const isExhausted = await redis.get(`exhausted:${p.id}`);
         if (!isExhausted) healthyProviders.push(p);
