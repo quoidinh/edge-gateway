@@ -92,12 +92,18 @@ app.all('*', async (c) => {
 
         const mergedHeaders = new Headers(response.headers);
 
+        // 4. Fix Decoding & Compression issues
+        // These headers must be removed because the edge runtime handles the body stream
+        mergedHeaders.delete('content-encoding');
+        mergedHeaders.delete('content-length');
+        mergedHeaders.delete('transfer-encoding');
+
         // Add Sticky Cookie & Provider Info
         const stickyCookie = `edge-provider=${targetProvider.id}; Path=/; HttpOnly; SameSite=Lax`;
         mergedHeaders.append('Set-Cookie', stickyCookie);
         mergedHeaders.set('X-Backend-Provider', targetProvider.id);
 
-        // Ensure CORS
+        // Ensure CORS matches the request
         mergedHeaders.set('Access-Control-Allow-Origin', headers.get('Origin') || '*');
         mergedHeaders.set('Access-Control-Allow-Credentials', 'true');
 
