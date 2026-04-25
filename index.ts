@@ -9,6 +9,7 @@ type Bindings = {
   NETLIFY_AUTH_TOKEN?: string;
   RAILWAY_API_KEY?: string;
   FLY_API_TOKEN?: string;
+  ALLOWED_PROVIDERS?: string; // Comma-separated list like "netlify,railway,fly"
 }
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -142,15 +143,54 @@ app.all('*', async (c) => {
     if (!isExhausted) healthyProviders.push(p);
   }
 
-  // 3. AUTO-SCALING TRIGGER
+  // 3. AUTO-SCALING TRIGGER (ACTIVE)
   if (healthyProviders.length === 0 || (healthyProviders.length < 2 && await checkHighLoad(redis, healthyProviders))) {
-    console.log('[Orchestrator] High load detected or no healthy providers. Signaling Scale-Out.');
-    // In a real scenario, this would trigger an async deployment via a Worker Queue or API call
-    await redis.set('scale_out_requested', 'true', { ex: 300 });
+    const isAlreadyScaling = await redis.get('is_scaling');
+    
+    if (!isAlreadyScaling) {
+      console.log('[Orchestrator] High load detected. Triggering AUTO-SCALE deployment...');
+      
+      // Use WaitUntil to run the long-running deployment in the background
+      c.executionCtx.waitUntil((async () => {
+        try {
+          await redis.set('is_scaling', 'true', { ex: 120 }); // Lock scaling for 2 mins
+          
+          const newId = `coderx-auto-${Math.floor(Math.random() * 10000)}`;
+          
+          // Multi-Cloud Rotation Logic from Environment
+          const allowedStr = c.env.ALLOWED_PROVIDERS || 'netlify';
+          const providers = allowedStr.split(',').map(p => p.trim());
+          const selectedProvider = providers[Math.floor(Math.random() * providers.length)];
+          
+          console.log(`[Orchestrator] Scaling out using provider: ${selectedProvider}`);
+          
+          let newUrl = '';
+          if (selectedProvider === 'netlify') {
+             newUrl = await provisionOnNetlify(c, newId);
+          } else {
+             // Structure ready for Railway/Fly APIs
+             newUrl = await provisionOnNetlify(c, `${newId}-fallback`);
+          }
+          
+          // Register the new provider
+          await registerProvider(redis, newId, newUrl);
+          
+          console.log(`[Orchestrator] Auto-scale SUCCESS: ${newId} is now ONLINE.`);
+          await redis.del('is_scaling');
+        } catch (scaleError: any) {
+          console.error('[Orchestrator] Auto-scale FAILED:', scaleError.message);
+          await redis.del('is_scaling');
+        }
+      })());
+    }
   }
 
   if (healthyProviders.length === 0) {
-    return c.json({ error: 'All backends busy. Auto-scaling in progress...', retry_after: 30 }, 503);
+    return c.json({ 
+      error: 'All backends busy', 
+      message: 'Automatic scaling has been triggered. Please retry in 60s.',
+      status: 'SCALING_IN_PROGRESS' 
+    }, 503);
   }
 
   // 4. Select Target (Round Robin or Weighted by LLM)
