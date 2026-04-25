@@ -58,9 +58,42 @@ async function provisionOnNetlify(c: any, siteName: string) {
   return data.ssl_url || data.url;
 }
 
+async function provisionOnRailway(c: any, siteName: string) {
+  const token = c.env.RAILWAY_API_KEY;
+  if (!token) throw new Error('Railway API key missing');
+
+  console.log(`[Provisioner] Triggering Railway deployment for ${siteName}`);
+  // Simplified Railway GraphQL call for site creation
+  const query = `mutation projectCreate($name: String!) { projectCreate(input: { name: $name }) { id defaultDomain } }`;
+  const res = await fetch('https://backboard.railway.app/graphql', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables: { name: siteName } })
+  });
+  const { data }: any = await res.json();
+  return data.projectCreate.defaultDomain;
+}
+
+async function provisionOnFly(c: any, siteName: string) {
+  const token = c.env.FLY_API_TOKEN;
+  if (!token) throw new Error('Fly.io token missing');
+
+  console.log(`[Provisioner] Triggering Fly.io deployment for ${siteName}`);
+  const res = await fetch('https://api.fly.io/graphql', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ 
+      query: `mutation($name: String!) { createApp(input: { name: $name, organizationId: "personal" }) { app { name } } }`,
+      variables: { name: siteName }
+    })
+  });
+  const { data }: any = await res.json();
+  return `${data.createApp.app.name}.fly.dev`;
+}
+
 async function registerProvider(redis: Redis, id: string, url: string) {
   console.log(`[Registry] Registering new provider: ${id} -> ${url}`);
-  const provider = { id, name: id, url };
+  const provider = { id, name: id, url: url.startsWith('http') ? url : `https://${url}` };
   await redis.sadd('active_providers', JSON.stringify(provider));
   await redis.del(`exhausted:${id}`);
 }
@@ -70,13 +103,17 @@ async function registerProvider(redis: Redis, id: string, url: string) {
 app.post('/deploy', async (c) => {
   const { provider, name } = await c.req.json();
   const redis = new Redis({ url: c.env.UPSTASH_REDIS_REST_URL, token: c.env.UPSTASH_REDIS_REST_TOKEN });
-
+  
   let url = '';
   try {
     if (provider === 'netlify') {
-      url = await provisionOnNetlify(c, name || `coderx-auto-${Date.now()}`);
+      url = await provisionOnNetlify(c, name);
+    } else if (provider === 'railway') {
+      url = await provisionOnRailway(c, name);
+    } else if (provider === 'fly') {
+      url = await provisionOnFly(c, name);
     } else {
-      return c.json({ error: 'Provider not yet implemented in auto-deploy' }, 400);
+      return c.json({ error: 'Provider not supported' }, 400);
     }
 
     await registerProvider(redis, name, url);
@@ -167,8 +204,11 @@ app.all('*', async (c) => {
           let newUrl = '';
           if (selectedProvider === 'netlify') {
              newUrl = await provisionOnNetlify(c, newId);
+          } else if (selectedProvider === 'railway') {
+             newUrl = await provisionOnRailway(c, newId);
+          } else if (selectedProvider === 'fly') {
+             newUrl = await provisionOnFly(c, newId);
           } else {
-             // Structure ready for Railway/Fly APIs
              newUrl = await provisionOnNetlify(c, `${newId}-fallback`);
           }
           
