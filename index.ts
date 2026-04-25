@@ -5,281 +5,131 @@ import { Redis } from '@upstash/redis/cloudflare';
 type Bindings = {
   UPSTASH_REDIS_REST_URL: string;
   UPSTASH_REDIS_REST_TOKEN: string;
-  OPENAI_API_KEY?: string;
-  NETLIFY_AUTH_TOKEN?: string;
-  RAILWAY_API_KEY?: string;
-  FLY_API_TOKEN?: string;
-  ALLOWED_PROVIDERS?: string; // Comma-separated list like "netlify,railway,fly"
 }
 
 const app = new Hono<{ Bindings: Bindings }>();
 
-// 1. Enable CORS
+
+// 1. Enable CORS with full credentials support
 app.use('*', cors({
-  origin: (origin) => origin || '*',
+  origin: (origin) => origin, // Dynamic origin for VS Code Webview
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Cookie'],
+  exposeHeaders: ['Set-Cookie'],
+  maxAge: 600,
   credentials: true,
 }));
 
-// --- METRICS & REGISTRY ---
-
-async function getActiveProviders(redis: Redis) {
-  const providersRaw = await redis.smembers('active_providers');
-  if (!providersRaw || providersRaw.length === 0) {
-    return [
-      { id: 'render-default', name: 'Render Default', url: 'https://coderx-backend.onrender.com' },
-      { id: 'render-second', name: 'Render Second', url: 'https://coderx-backend-render.onrender.com' }
-    ];
-  }
-  return providersRaw.map(p => typeof p === 'string' ? JSON.parse(p) : p);
-}
-
-async function recordMetric(redis: Redis, providerId: string, duration: number, success: boolean) {
-  const key = `metrics:${providerId}`;
-  await redis.lpush(key, JSON.stringify({ duration, success, ts: Date.now() }));
-  await redis.ltrim(key, 0, 99); // Keep last 100 requests
-}
-
-// --- PROVISIONING LOGIC ---
-
-async function provisionOnNetlify(c: any, siteName: string) {
-  const token = c.env.NETLIFY_AUTH_TOKEN;
-  if (!token) throw new Error('Netlify token missing');
-
-  console.log(`[Provisioner] Triggering Netlify deployment for ${siteName}`);
-  const res = await fetch('https://api.netlify.com/api/v1/sites', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: siteName })
-  });
-
-  const data: any = await res.json();
-  return data.ssl_url || data.url;
-}
-
-async function provisionOnRailway(c: any, siteName: string) {
-  const token = c.env.RAILWAY_API_KEY;
-  if (!token) throw new Error('Railway API key missing');
-
-  console.log(`[Provisioner] Triggering Railway deployment for ${siteName}`);
-  // Simplified Railway GraphQL call for site creation
-  const query = `mutation projectCreate($name: String!) { projectCreate(input: { name: $name }) { id defaultDomain } }`;
-  const res = await fetch('https://backboard.railway.app/graphql', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, variables: { name: siteName } })
-  });
-  const { data }: any = await res.json();
-  return data.projectCreate.defaultDomain;
-}
-
-async function provisionOnFly(c: any, siteName: string) {
-  const token = c.env.FLY_API_TOKEN;
-  if (!token) throw new Error('Fly.io token missing');
-
-  console.log(`[Provisioner] Triggering Fly.io deployment for ${siteName}`);
-  const res = await fetch('https://api.fly.io/graphql', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ 
-      query: `mutation($name: String!) { createApp(input: { name: $name, organizationId: "personal" }) { app { name } } }`,
-      variables: { name: siteName }
-    })
-  });
-  const { data }: any = await res.json();
-  return `${data.createApp.app.name}.fly.dev`;
-}
-
-async function registerProvider(redis: Redis, id: string, url: string) {
-  console.log(`[Registry] Registering new provider: ${id} -> ${url}`);
-  const provider = { id, name: id, url: url.startsWith('http') ? url : `https://${url}` };
-  await redis.sadd('active_providers', JSON.stringify(provider));
-  await redis.del(`exhausted:${id}`);
-}
-
-// --- ENDPOINTS ---
-
-app.post('/deploy', async (c) => {
-  const { provider, name } = await c.req.json();
-  const redis = new Redis({ url: c.env.UPSTASH_REDIS_REST_URL, token: c.env.UPSTASH_REDIS_REST_TOKEN });
-  
-  let url = '';
-  try {
-    if (provider === 'netlify') {
-      url = await provisionOnNetlify(c, name);
-    } else if (provider === 'railway') {
-      url = await provisionOnRailway(c, name);
-    } else if (provider === 'fly') {
-      url = await provisionOnFly(c, name);
-    } else {
-      return c.json({ error: 'Provider not supported' }, 400);
-    }
-
-    await registerProvider(redis, name, url);
-    return c.json({ status: 'Deployed and Registered', url });
-  } catch (e: any) {
-    return c.json({ error: 'Deployment failed', message: e.message }, 500);
-  }
-});
-
-// --- LLM ORCHESTRATION ---
-
-app.get('/analyze', async (c) => {
-  const redisUrl = c.env.UPSTASH_REDIS_REST_URL;
-  const redisToken = c.env.UPSTASH_REDIS_REST_TOKEN;
-  const openaiKey = c.env.OPENAI_API_KEY;
-
-  if (!redisUrl || !redisToken || !openaiKey) {
-    return c.json({ error: 'Configuration missing (Redis or OpenAI)' }, 500);
-  }
-
-  const redis = new Redis({ url: redisUrl, token: redisToken });
-  const providers = await getActiveProviders(redis);
-
-  const allMetrics: any = {};
-  for (const p of providers) {
-    allMetrics[p.id] = await redis.lrange(`metrics:${p.id}`, 0, 20);
-  }
-
-  // CALL LLM (Placeholder for actual OpenAI fetch)
-  // In a real implementation, you would send allMetrics to OpenAI and ask for:
-  // 1. Health status of each provider.
-  // 2. Optimal traffic weights (e.g. 70% to Cloudflare, 30% to Railway).
-  // 3. Whether to scale out (deploy new instance).
-
-  return c.json({
-    message: "LLM Analysis Complete",
-    suggestion: "Maintain current distribution. Fly.io showing slightly higher latency (avg 450ms).",
-    metrics_summary: allMetrics
-  });
-});
+// Configuration for remote providers
+const PROVIDERS = [
+  { id: 'render1', name: 'Render Edge', url: 'https://coderx-backend.onrender.com' },
+  { id: 'render2', name: 'Render Edge', url: 'https://coderx-backend-render.onrender.com' }
+];
 
 app.all('*', async (c) => {
-
-  const startTime = Date.now();
-  const url = new URL(c.req.url);
-
-  // 1. Initialize Redis
-  const redisUrl = c.env.UPSTASH_REDIS_REST_URL;
-  const redisToken = c.env.UPSTASH_REDIS_REST_TOKEN;
-
-  if (!redisUrl || !redisToken) {
-    return c.json({ error: 'Redis configuration missing' }, 500);
-  }
-
-  const redis = new Redis({ url: redisUrl, token: redisToken });
-
-  // 2. Load Balancing Strategy (Dynamic)
-  const providers = await getActiveProviders(redis);
-
-  // Filter out exhausted/unhealthy
-  const healthyProviders = [];
-  for (const p of providers) {
-    const isExhausted = await redis.get(`exhausted:${p.id}`);
-    if (!isExhausted) healthyProviders.push(p);
-  }
-
-  // 3. AUTO-SCALING TRIGGER (ACTIVE)
-  if (healthyProviders.length === 0 || (healthyProviders.length < 2 && await checkHighLoad(redis, healthyProviders))) {
-    const isAlreadyScaling = await redis.get('is_scaling');
-    
-    if (!isAlreadyScaling) {
-      console.log('[Orchestrator] High load detected. Triggering AUTO-SCALE deployment...');
-      
-      // Use WaitUntil to run the long-running deployment in the background
-      c.executionCtx.waitUntil((async () => {
-        try {
-          await redis.set('is_scaling', 'true', { ex: 120 }); // Lock scaling for 2 mins
-          
-          const newId = `coderx-auto-${Math.floor(Math.random() * 10000)}`;
-          
-          // Multi-Cloud Rotation Logic from Environment
-          const allowedStr = c.env.ALLOWED_PROVIDERS || 'netlify';
-          const providers = allowedStr.split(',').map(p => p.trim());
-          const selectedProvider = providers[Math.floor(Math.random() * providers.length)];
-          
-          console.log(`[Orchestrator] Scaling out using provider: ${selectedProvider}`);
-          
-          let newUrl = '';
-          if (selectedProvider === 'netlify') {
-             newUrl = await provisionOnNetlify(c, newId);
-          } else if (selectedProvider === 'railway') {
-             newUrl = await provisionOnRailway(c, newId);
-          } else if (selectedProvider === 'fly') {
-             newUrl = await provisionOnFly(c, newId);
-          } else {
-             newUrl = await provisionOnNetlify(c, `${newId}-fallback`);
-          }
-          
-          // Register the new provider
-          await registerProvider(redis, newId, newUrl);
-          
-          console.log(`[Orchestrator] Auto-scale SUCCESS: ${newId} is now ONLINE.`);
-          await redis.del('is_scaling');
-        } catch (scaleError: any) {
-          console.error('[Orchestrator] Auto-scale FAILED:', scaleError.message);
-          await redis.del('is_scaling');
-        }
-      })());
-    }
-  }
-
-  if (healthyProviders.length === 0) {
-    return c.json({ 
-      error: 'All backends busy', 
-      message: 'Automatic scaling has been triggered. Please retry in 60s.',
-      status: 'SCALING_IN_PROGRESS' 
-    }, 503);
-  }
-
-  // 4. Select Target (Round Robin or Weighted by LLM)
-  // Placeholder for LLM weight analysis: const weights = await getLLMWeights(redis, healthyProviders);
-  const targetProvider = healthyProviders[Math.floor(Math.random() * healthyProviders.length)];
-
-  // 5. Proxy Execution
-  const headers = new Headers(c.req.raw.headers);
-  headers.delete('host');
-
   try {
-    const response = await fetch(`${targetProvider.url}${url.pathname}${url.search}`, {
-      method: c.req.method,
-      headers: headers,
-      body: c.req.method !== 'GET' ? await c.req.arrayBuffer() : undefined,
-      redirect: 'follow'
-    });
+    const url = new URL(c.req.url);
+    const headers = new Headers(c.req.raw.headers);
+    const cookieHeader = c.req.header('Cookie') || '';
+    const stickyProviderId = cookieHeader.match(/edge-provider=([^;]+)/)?.[1];
 
-    const duration = Date.now() - startTime;
-    await recordMetric(redis, targetProvider.id, duration, response.ok);
+    // 1. Discover Healthy Providers
+    let healthyProviders = [];
+    
+    // Support both Cloudflare (c.env) and Vercel/Node (process.env)
+    const runtimeEnv = {
+      UPSTASH_REDIS_REST_URL: (c.env as Bindings)?.UPSTASH_REDIS_REST_URL || (process as any).env?.UPSTASH_REDIS_REST_URL,
+      UPSTASH_REDIS_REST_TOKEN: (c.env as Bindings)?.UPSTASH_REDIS_REST_TOKEN || (process as any).env?.UPSTASH_REDIS_REST_TOKEN,
+    };
 
-    const mergedHeaders = new Headers(response.headers);
-    mergedHeaders.set('X-Backend-Provider', targetProvider.id);
-    mergedHeaders.set('X-Response-Time', `${duration}ms`);
+    if (!runtimeEnv.UPSTASH_REDIS_REST_URL || !runtimeEnv.UPSTASH_REDIS_REST_TOKEN) {
+      // Local Simulator Mode or Missing Config
+      console.warn('[Gateway] Redis credentials missing, entering simulator mode or using default providers');
+      healthyProviders = [...PROVIDERS]; // Default to all if no redis
+    } else {
+      try {
+        const redis = new Redis({
+          url: runtimeEnv.UPSTASH_REDIS_REST_URL,
+          token: runtimeEnv.UPSTASH_REDIS_REST_TOKEN,
+        });
+        
+        for (const p of PROVIDERS) {
+          const isExhausted = await redis.get(`exhausted:${p.id}`);
+          if (!isExhausted) healthyProviders.push(p);
+        }
+      } catch (redisError: any) {
+        console.error('[Gateway] Redis connection error:', redisError.message);
+        healthyProviders = [...PROVIDERS]; // Fallback to all providers if redis fails
+      }
+    }
 
-    return new Response(response.body, {
-      status: response.status,
-      headers: mergedHeaders
-    });
 
-  } catch (err: any) {
-    console.error(`[Gateway] Failed to reach ${targetProvider.id}:`, err.message);
-    await recordMetric(redis, targetProvider.id, 0, false);
-    // Failover logic would go here: retry with another provider
-    return c.json({ error: 'Upstream Error', provider: targetProvider.id }, 502);
+    if (healthyProviders.length === 0) {
+      return c.json({ error: 'All providers exhausted' }, 503);
+    }
+
+    // 2. Select Initial Target
+    let targetProvider = stickyProviderId
+      ? healthyProviders.find(p => p.id === stickyProviderId) || healthyProviders[0]
+      : healthyProviders[Math.floor(Math.random() * healthyProviders.length)];
+
+    // 3. Proxy Execution with Auto-Retry
+    let lastError = null;
+    const body = ['GET', 'HEAD'].includes(c.req.method) ? null : await c.req.arrayBuffer();
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const targetUrl = `${targetProvider.url}${url.pathname}${url.search}`;
+
+      try {
+        console.log(`[Gateway] Attempt ${attempt + 1}: Proxying to ${targetProvider.name} (${targetUrl})`);
+
+        const response = await fetch(targetUrl, {
+          method: c.req.method,
+          headers: headers,
+          body,
+          redirect: 'manual'
+        });
+
+        const mergedHeaders = new Headers(response.headers);
+
+        // 4. Fix Decoding & Compression issues
+        // These headers must be removed because the edge runtime handles the body stream
+        mergedHeaders.delete('content-encoding');
+        mergedHeaders.delete('content-length');
+        mergedHeaders.delete('transfer-encoding');
+
+        // Add Sticky Cookie & Provider Info
+        const stickyCookie = `edge-provider=${targetProvider.id}; Path=/; HttpOnly; SameSite=Lax`;
+        mergedHeaders.append('Set-Cookie', stickyCookie);
+        mergedHeaders.set('X-Backend-Provider', targetProvider.id);
+
+        // Ensure CORS matches the request
+        mergedHeaders.set('Access-Control-Allow-Origin', headers.get('Origin') || '*');
+        mergedHeaders.set('Access-Control-Allow-Credentials', 'true');
+
+        return new Response(response.body, {
+          status: response.status,
+          headers: mergedHeaders
+        });
+
+      } catch (err: any) {
+        lastError = err;
+        console.error(`[Gateway] Attempt ${attempt + 1} failed for ${targetUrl}:`, err.message);
+
+        // Try another provider for the second attempt
+        if (healthyProviders.length > 1) {
+          const otherProviders = healthyProviders.filter(p => p.id !== targetProvider.id);
+          targetProvider = otherProviders[Math.floor(Math.random() * otherProviders.length)];
+        }
+      }
+    }
+
+    return c.json({ error: 'Gateway Timeout', details: 'Backends unreachable', last_error: lastError?.message }, 504);
+
+  } catch (e: any) {
+    console.error('[Gateway] Critical Error:', e.message);
+    return c.json({ error: 'Gateway Error', message: e.message }, 500);
   }
 });
 
-async function checkHighLoad(redis: Redis, providers: any[]) {
-  // Simple heuristic: if avg latency > 2s, consider high load
-  if (providers.length === 0) return true;
-  const p = providers[0];
-  const metricsRaw = await redis.lrange(`metrics:${p.id}`, 0, 10);
-  if (!metricsRaw || metricsRaw.length < 5) return false;
-
-  const latencies = metricsRaw.map(m => (typeof m === 'string' ? JSON.parse(m) : m).duration);
-  const avg = latencies.reduce((a, b) => a + b, 0) / latencies.length;
-  return avg > 2000;
-}
-
 export default app;
-
