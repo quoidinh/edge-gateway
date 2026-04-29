@@ -15,7 +15,7 @@ app.use('*', cors({
     origin: (origin) => origin, // Dynamic origin for VS Code Webview
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Cookie'],
-    exposeHeaders: ['Set-Cookie'],
+    exposeHeaders: ['Set-Cookie', 'x-real-backend-url'],
     maxAge: 600,
     credentials: true,
 }));
@@ -105,6 +105,8 @@ app.all('*', async (c) => {
                 const stickyCookie = `edge-provider=${targetProvider.id}; Path=/; HttpOnly; SameSite=Lax`;
                 mergedHeaders.append('Set-Cookie', stickyCookie);
                 mergedHeaders.set('X-Backend-Provider', targetProvider.id);
+                mergedHeaders.set('x-real-backend-url', targetUrl);
+                mergedHeaders.set('access-control-expose-headers', 'x-real-backend-url');
 
                 // Ensure CORS matches the request
                 mergedHeaders.set('Access-Control-Allow-Origin', headers.get('Origin') || '*');
