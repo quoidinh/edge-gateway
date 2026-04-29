@@ -24,7 +24,7 @@ app.use('*', cors({
 const PROVIDERS = [
     { id: 'render1', name: 'Render Edge', url: 'https://coderx-backend.onrender.com' },
     { id: 'render2', name: 'Render Edge', url: 'https://coderx-backend-render.onrender.com' },
-    // { id: 'fly1', name: 'Fly Edge', url: 'https://coderx-backend-render.fly.dev' },
+    { id: 'fly1', name: 'Fly Edge', url: 'https://coderx-backend-render.fly.dev' },
     // { id: 'vercel1', name: 'Vercel Edge', url: 'https://coderx-backend-vercel.vercel.app' },
     // { id: 'railway1', name: 'Railway Edge', url: 'https://coderx-backend-railway.up.railway.app' }
 ];
